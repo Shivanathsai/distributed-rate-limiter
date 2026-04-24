@@ -11,7 +11,7 @@ import time
 import uuid
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Dict, Optional
 
 import redis.asyncio as aioredis
 

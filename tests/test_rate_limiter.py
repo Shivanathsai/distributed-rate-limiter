@@ -1,10 +1,9 @@
 import asyncio
-from unittest.mock import patch, AsyncMock
+from unittest.mock import patch
 
 import fakeredis
 import fakeredis.aioredis as aioredis_fake
 import pytest
-import pytest_asyncio
 
 from app.rate_limiter import RateLimitResult, SlidingWindowRateLimiter
 

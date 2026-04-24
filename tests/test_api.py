@@ -3,7 +3,6 @@ test_api.py — full HTTP stack tests.
 Mocks init_redis/close_redis so the lifespan never touches real Redis.
 """
 
-import asyncio
 from unittest.mock import AsyncMock, patch
 
 import fakeredis
