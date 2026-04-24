@@ -22,7 +22,7 @@ REGISTRY = CollectorRegistry(auto_describe=True)
 requests_total = Counter(
     "rate_limiter_requests_total",
     "Total rate limit decisions",
-    ["decision", "key_type"],          # decision: allowed | denied
+    ["decision", "key_type"],  # decision: allowed | denied
     registry=REGISTRY,
 )
 

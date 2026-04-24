@@ -7,24 +7,22 @@ Run: pytest tests/test_api.py -v
 
 import pytest
 from fastapi.testclient import TestClient
-from unittest.mock import patch, AsyncMock
 
-import fakeredis.aioredis as fakeredis
 
 from app.main import app
-from app.dependencies import _client as _global_client
 import app.dependencies as deps
 
 
 @pytest.fixture
 def client(fake_redis):
     """TestClient with fakeredis injected."""
+
     # Override the get_redis dependency
     async def _override():
         yield fake_redis
 
     app.dependency_overrides[deps.get_redis_dep] = _override
-    deps._client = fake_redis   # for middleware
+    deps._client = fake_redis  # for middleware
 
     with TestClient(app, raise_server_exceptions=True) as c:
         yield c
@@ -36,8 +34,8 @@ def client(fake_redis):
 # /check
 # ---------------------------------------------------------------------------
 
-class TestCheckEndpoint:
 
+class TestCheckEndpoint:
     def test_check_allowed(self, client):
         r = client.post("/check", params={"key": "ip:1.2.3.4", "limit": 10})
         assert r.status_code == 200
@@ -47,7 +45,7 @@ class TestCheckEndpoint:
 
     def test_check_sets_ratelimit_headers(self, client):
         r = client.post("/check", params={"key": "ip:hdr", "limit": 10})
-        assert "X-RateLimit-Limit"     in r.headers
+        assert "X-RateLimit-Limit" in r.headers
         assert "X-RateLimit-Remaining" in r.headers
 
     def test_check_denied_returns_429(self, client):
@@ -76,14 +74,17 @@ class TestCheckEndpoint:
 # /check/bulk
 # ---------------------------------------------------------------------------
 
-class TestBulkEndpoint:
 
+class TestBulkEndpoint:
     def test_bulk_check(self, client):
-        r = client.post("/check/bulk", json={
-            "keys": ["user:a", "user:b", "user:c"],
-            "limit": 10,
-            "window_ms": 1000,
-        })
+        r = client.post(
+            "/check/bulk",
+            json={
+                "keys": ["user:a", "user:b", "user:c"],
+                "limit": 10,
+                "window_ms": 1000,
+            },
+        )
         assert r.status_code == 200
         results = r.json()["results"]
         assert len(results) == 3
@@ -93,13 +94,16 @@ class TestBulkEndpoint:
         # Fill user:x
         for _ in range(5):
             client.post("/check", params={"key": "user:x", "limit": 5})
-        r = client.post("/check/bulk", json={
-            "keys": ["user:x", "user:fresh"],
-            "limit": 5,
-            "window_ms": 1000,
-        })
+        r = client.post(
+            "/check/bulk",
+            json={
+                "keys": ["user:x", "user:fresh"],
+                "limit": 5,
+                "window_ms": 1000,
+            },
+        )
         results = r.json()["results"]
-        x     = next(res for res in results if res["key"] == "user:x")
+        x = next(res for res in results if res["key"] == "user:x")
         fresh = next(res for res in results if res["key"] == "user:fresh")
         assert not x["allowed"]
         assert fresh["allowed"]
@@ -109,8 +113,8 @@ class TestBulkEndpoint:
 # /peek
 # ---------------------------------------------------------------------------
 
-class TestPeekEndpoint:
 
+class TestPeekEndpoint:
     def test_peek_empty(self, client):
         r = client.get("/peek/ip:unseen")
         assert r.status_code == 200
@@ -127,8 +131,8 @@ class TestPeekEndpoint:
 # /reset
 # ---------------------------------------------------------------------------
 
-class TestResetEndpoint:
 
+class TestResetEndpoint:
     def test_reset_clears_key(self, client):
         for _ in range(5):
             client.post("/check", params={"key": "ip:rst", "limit": 5})
@@ -148,8 +152,8 @@ class TestResetEndpoint:
 # /health and /ready
 # ---------------------------------------------------------------------------
 
-class TestOpsEndpoints:
 
+class TestOpsEndpoints:
     def test_health(self, client):
         r = client.get("/health")
         assert r.status_code == 200

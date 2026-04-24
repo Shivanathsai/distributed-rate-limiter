@@ -58,7 +58,7 @@ class RateLimitResult:
     current_count: int
     limit: int
     window_ms: int
-    retry_after_ms: int   # 0 when allowed
+    retry_after_ms: int  # 0 when allowed
 
     @property
     def remaining(self) -> int:
@@ -71,9 +71,9 @@ class RateLimitResult:
     def as_headers(self) -> Dict[str, str]:
         """Standard RateLimit response headers (IETF draft-6)."""
         headers = {
-            "X-RateLimit-Limit":     str(self.limit),
+            "X-RateLimit-Limit": str(self.limit),
             "X-RateLimit-Remaining": str(self.remaining),
-            "X-RateLimit-Window":    str(self.window_ms // 1000),
+            "X-RateLimit-Window": str(self.window_ms // 1000),
         }
         if not self.allowed:
             headers["Retry-After"] = str(int(self.retry_after_seconds) + 1)
@@ -122,7 +122,7 @@ class SlidingWindowRateLimiter:
         Returns:
             :class:`RateLimitResult` with allow/deny decision + metadata.
         """
-        now_ms    = int(time.time() * 1_000)
+        now_ms = int(time.time() * 1_000)
         member_id = f"{now_ms}:{uuid.uuid4().hex}"
 
         script = await self._load_script()
@@ -135,8 +135,11 @@ class SlidingWindowRateLimiter:
             # Fail-open: never block traffic on Redis errors.
             logger.error("Redis error in rate limiter — failing open: %s", exc)
             return RateLimitResult(
-                allowed=True, current_count=0,
-                limit=limit, window_ms=window_ms, retry_after_ms=0,
+                allowed=True,
+                current_count=0,
+                limit=limit,
+                window_ms=window_ms,
+                retry_after_ms=0,
             )
 
         return RateLimitResult(
@@ -181,6 +184,7 @@ class SlidingWindowRateLimiter:
 # Multi-tier rate limiter — different limits per tier (free / pro / enterprise)
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class Tier:
     name: str
@@ -188,9 +192,9 @@ class Tier:
     window_ms: int
 
 
-FREE       = Tier("free",       100,  60_000)   # 100 req/min
-PRO        = Tier("pro",      1_000,  60_000)   # 1 000 req/min
-ENTERPRISE = Tier("enterprise", 0,        0)    # 0 = unlimited
+FREE = Tier("free", 100, 60_000)  # 100 req/min
+PRO = Tier("pro", 1_000, 60_000)  # 1 000 req/min
+ENTERPRISE = Tier("enterprise", 0, 0)  # 0 = unlimited
 
 
 class TieredRateLimiter:
@@ -220,9 +224,7 @@ class TieredRateLimiter:
         3. Endpoint limit   — prevents hot-endpoint abuse
         """
         # Layer 1 — IP
-        ip_result = await self._l.check(
-            f"rl:ip:{ip}", ip_limit, ip_window_ms
-        )
+        ip_result = await self._l.check(f"rl:ip:{ip}", ip_limit, ip_window_ms)
         if not ip_result.allowed:
             return ip_result
 

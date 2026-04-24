@@ -53,7 +53,7 @@ async def lifespan(app: FastAPI):
         batch_size=settings.pipeline_batch_size,
     )
     app.state.pipeline_limiter = pipeline_limiter
-    app.state.redis             = redis_client
+    app.state.redis = redis_client
 
     # Start the background flush task (lives for the whole server lifetime).
     flush_task = asyncio.create_task(
@@ -116,6 +116,7 @@ def _to_info(result: RateLimitResult) -> RateLimitInfo:
 
 # ── Routes ───────────────────────────────────────────────────────────────────
 
+
 @app.post(
     "/check",
     response_model=CheckResponse,
@@ -123,25 +124,27 @@ def _to_info(result: RateLimitResult) -> RateLimitInfo:
     tags=["Rate Limiting"],
 )
 async def check_rate_limit(
-    key:       str = Query(..., description="Rate-limit key, e.g. `ip:1.2.3.4`"),
-    limit:     int = Query(settings.default_limit_per_second, gt=0, le=100_000),
+    key: str = Query(..., description="Rate-limit key, e.g. `ip:1.2.3.4`"),
+    limit: int = Query(settings.default_limit_per_second, gt=0, le=100_000),
     window_ms: int = Query(1_000, gt=0, le=3_600_000),
 ) -> CheckResponse:
     limiter = app.state.pipeline_limiter
 
-    t0     = time.perf_counter()
+    t0 = time.perf_counter()
     result = await limiter.check(key, limit, window_ms)
     redis_latency.observe(time.perf_counter() - t0)
 
-    record_decision(result.allowed, key_type=key.split(":")[0] if ":" in key else "custom")
+    record_decision(
+        result.allowed, key_type=key.split(":")[0] if ":" in key else "custom"
+    )
 
     if not result.allowed:
         raise HTTPException(
             status_code=429,
             detail={
-                "error":          "rate_limit_exceeded",
+                "error": "rate_limit_exceeded",
                 "retry_after_ms": result.retry_after_ms,
-                "rate_limit":     _to_info(result).model_dump(),
+                "rate_limit": _to_info(result).model_dump(),
             },
             headers=result.as_headers(),
         )
@@ -157,8 +160,12 @@ async def check_bulk(body: BulkCheckRequest) -> dict:
     )
     return {
         "results": [
-            {"key": k, "allowed": r.allowed,
-             "remaining": r.remaining, "retry_after_ms": r.retry_after_ms}
+            {
+                "key": k,
+                "allowed": r.allowed,
+                "remaining": r.remaining,
+                "retry_after_ms": r.retry_after_ms,
+            }
             for k, r in zip(body.keys, results)
         ]
     }
@@ -166,18 +173,18 @@ async def check_bulk(body: BulkCheckRequest) -> dict:
 
 @app.get("/peek/{key:path}", response_model=PeekResponse, tags=["Rate Limiting"])
 async def peek(
-    key:       str = Path(...),
+    key: str = Path(...),
     window_ms: int = Query(1_000, gt=0),
-    redis:     aioredis.Redis = Depends(get_redis_dep),
+    redis: aioredis.Redis = Depends(get_redis_dep),
 ) -> PeekResponse:
     limiter = SlidingWindowRateLimiter(redis)
-    count   = await limiter.peek(key, window_ms)
+    count = await limiter.peek(key, window_ms)
     return PeekResponse(key=key, current_count=count, window_ms=window_ms)
 
 
 @app.delete("/reset/{key:path}", response_model=ResetResponse, tags=["Admin"])
 async def reset(
-    key:   str = Path(...),
+    key: str = Path(...),
     redis: aioredis.Redis = Depends(get_redis_dep),
 ) -> ResetResponse:
     limiter = SlidingWindowRateLimiter(redis)
@@ -192,11 +199,13 @@ async def health() -> HealthResponse:
 
 @app.get("/ready", response_model=HealthResponse, tags=["Ops"])
 async def ready(redis: aioredis.Redis = Depends(get_redis_dep)) -> HealthResponse:
-    limiter     = SlidingWindowRateLimiter(redis)
+    limiter = SlidingWindowRateLimiter(redis)
     redis_alive = await limiter.health()
     if not redis_alive:
         raise HTTPException(status_code=503, detail="Redis unavailable")
-    return HealthResponse(status="ready", redis=redis_alive, version=settings.app_version)
+    return HealthResponse(
+        status="ready", redis=redis_alive, version=settings.app_version
+    )
 
 
 @app.get("/metrics", include_in_schema=False, tags=["Ops"])

@@ -28,9 +28,9 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-_sentinel: Sentinel | None            = None
+_sentinel: Sentinel | None = None
 _pool: aioredis.ConnectionPool | None = None
-_client: aioredis.Redis | None        = None
+_client: aioredis.Redis | None = None
 
 
 def _parse_sentinel_hosts(raw: str) -> List[tuple]:
@@ -68,12 +68,13 @@ async def init_redis() -> aioredis.Redis:
     if sentinel_hosts_raw:
         # Sentinel mode (production)
         sentinel_hosts = _parse_sentinel_hosts(sentinel_hosts_raw)
-        master_name    = getattr(settings, "redis_sentinel_master", "mymaster")
-        password       = settings.redis_password or None
+        master_name = getattr(settings, "redis_sentinel_master", "mymaster")
+        password = settings.redis_password or None
 
         logger.info(
             "Connecting via Redis Sentinel -- hosts=%s master=%s",
-            sentinel_hosts, master_name,
+            sentinel_hosts,
+            master_name,
         )
 
         _sentinel = Sentinel(

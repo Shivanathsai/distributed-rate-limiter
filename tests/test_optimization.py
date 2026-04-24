@@ -22,8 +22,8 @@ from app.pipeline_limiter import PipelinedRateLimiter
 @pytest_asyncio.fixture
 async def redis_pair():
     server = fakeredis.FakeServer()
-    r1     = fakeredis.FakeRedis(server=server, decode_responses=True)
-    r2     = fakeredis.FakeRedis(server=server, decode_responses=True)
+    r1 = fakeredis.FakeRedis(server=server, decode_responses=True)
+    r2 = fakeredis.FakeRedis(server=server, decode_responses=True)
     yield r1, r2
     await r1.aclose()
     await r2.aclose()
@@ -31,8 +31,8 @@ async def redis_pair():
 
 # ── Claim: O(n) grows with window size, O(log n) stays flat ──────────────────
 
-class TestComplexityComparison:
 
+class TestComplexityComparison:
     @pytest.mark.asyncio
     async def test_naive_degrades_as_n_grows(self, redis_pair):
         """
@@ -40,12 +40,12 @@ class TestComplexityComparison:
         Sorted set O(log n) latency should stay roughly constant.
         """
         r_naive, r_sorted = redis_pair
-        naive   = NaiveListRateLimiter(r_naive)
+        naive = NaiveListRateLimiter(r_naive)
         optimal = SlidingWindowRateLimiter(r_sorted)
 
-        LIMIT    = 999_999
-        WINDOW   = 1_000
-        ITERS    = 200
+        LIMIT = 999_999
+        WINDOW = 1_000
+        ITERS = 200
 
         def measure(coro_factory, iters):
             # Synchronous measurement loop (blocking gather in test)
@@ -53,8 +53,8 @@ class TestComplexityComparison:
                 _gather_latencies(coro_factory, iters)
             )
 
-        latencies_naive_small  = []
-        latencies_naive_large  = []
+        latencies_naive_small = []
+        latencies_naive_large = []
         latencies_sorted_small = []
         latencies_sorted_large = []
 
@@ -97,10 +97,11 @@ class TestComplexityComparison:
             await optimal.check("s:large", LIMIT, WINDOW)
             latencies_sorted_large.append((time.perf_counter() - t0) * 1_000)
 
-        p99 = lambda lats: sorted(lats)[int(len(lats) * 0.99)]
+        def p99(lats):
+           return sorted(lats)[int(len(lats) * 0.99)]
 
-        naive_small_p99  = p99(latencies_naive_small)
-        naive_large_p99  = p99(latencies_naive_large)
+        naive_small_p99 = p99(latencies_naive_small)
+        naive_large_p99 = p99(latencies_naive_large)
         sorted_small_p99 = p99(latencies_sorted_small)
         sorted_large_p99 = p99(latencies_sorted_large)
 
@@ -126,8 +127,8 @@ async def _gather_latencies(coro_factory, iters):
 
 # ── Claim: 100K+ req/s via pipelining ────────────────────────────────────────
 
-class TestPipelineThroughput:
 
+class TestPipelineThroughput:
     @pytest.mark.asyncio
     async def test_pipeline_achieves_high_throughput(self, fake_redis):
         """
@@ -140,19 +141,21 @@ class TestPipelineThroughput:
         seq_limiter = SlidingWindowRateLimiter(fake_redis)
         t0 = time.perf_counter()
         for i in range(TOTAL):
-            await seq_limiter.check(f"seq:{i%10}", limit=999_999, window_ms=1_000)
+            await seq_limiter.check(f"seq:{i % 10}", limit=999_999, window_ms=1_000)
         seq_elapsed = time.perf_counter() - t0
 
         # Pipelined
         server = fakeredis.FakeServer()
         redis2 = fakeredis.FakeRedis(server=server, decode_responses=True)
         pip_limiter = PipelinedRateLimiter(redis2, batch_size=100, flush_interval_ms=1)
-        task        = asyncio.create_task(pip_limiter.run())
+        task = asyncio.create_task(pip_limiter.run())
 
         t0 = time.perf_counter()
         await asyncio.gather(
-            *[pip_limiter.check(f"pip:{i%10}", limit=999_999, window_ms=1_000)
-              for i in range(TOTAL)]
+            *[
+                pip_limiter.check(f"pip:{i % 10}", limit=999_999, window_ms=1_000)
+                for i in range(TOTAL)
+            ]
         )
         pip_elapsed = time.perf_counter() - t0
 
@@ -173,11 +176,10 @@ class TestPipelineThroughput:
         server = fakeredis.FakeServer()
         redis2 = fakeredis.FakeRedis(server=server, decode_responses=True)
         limiter = PipelinedRateLimiter(redis2, batch_size=50, flush_interval_ms=1)
-        task    = asyncio.create_task(limiter.run())
+        task = asyncio.create_task(limiter.run())
 
         results = await asyncio.gather(
-            *[limiter.check("key:correct", limit=5, window_ms=1_000)
-              for _ in range(20)]
+            *[limiter.check("key:correct", limit=5, window_ms=1_000) for _ in range(20)]
         )
 
         allowed = sum(1 for r in results if r.allowed)
@@ -190,8 +192,8 @@ class TestPipelineThroughput:
 
 # ── Claim: failover — fail-open on Redis error ────────────────────────────────
 
-class TestFailover:
 
+class TestFailover:
     @pytest.mark.asyncio
     async def test_fail_open_on_redis_error(self, fake_redis):
         """
@@ -204,7 +206,8 @@ class TestFailover:
         limiter = SlidingWindowRateLimiter(fake_redis)
 
         with patch.object(
-            limiter, "_load_script",
+            limiter,
+            "_load_script",
             side_effect=aioredis.RedisError("simulated primary failure"),
         ):
             result = await limiter.check("key:failover", limit=5, window_ms=1_000)
@@ -214,10 +217,10 @@ class TestFailover:
     @pytest.mark.asyncio
     async def test_pipeline_fail_open_on_redis_error(self):
         """Pipeline flusher must also fail-open on Redis error."""
-        server  = fakeredis.FakeServer()
-        redis   = fakeredis.FakeRedis(server=server, decode_responses=True)
+        server = fakeredis.FakeServer()
+        redis = fakeredis.FakeRedis(server=server, decode_responses=True)
         limiter = PipelinedRateLimiter(redis, batch_size=10, flush_interval_ms=1)
-        task    = asyncio.create_task(limiter.run())
+        task = asyncio.create_task(limiter.run())
 
         # Close Redis to simulate failure mid-flight
         await redis.aclose()

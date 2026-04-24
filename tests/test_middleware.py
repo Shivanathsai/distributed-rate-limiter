@@ -16,7 +16,7 @@ import app.dependencies as deps
 def client_with_pipeline():
     """Wire a real PipelinedRateLimiter (backed by fakeredis) into app.state."""
     server = fakeredis.FakeServer()
-    redis  = fakeredis.FakeRedis(server=server, decode_responses=True)
+    redis = fakeredis.FakeRedis(server=server, decode_responses=True)
 
     async def _override():
         yield redis
@@ -24,7 +24,7 @@ def client_with_pipeline():
     app.dependency_overrides[deps.get_redis_dep] = _override
     deps._client = redis
 
-    pl   = PipelinedRateLimiter(redis, batch_size=50)
+    pl = PipelinedRateLimiter(redis, batch_size=50)
     loop = asyncio.new_event_loop()
     task = loop.create_task(pl.run())
     app.state.pipeline_limiter = pl
@@ -41,7 +41,6 @@ def client_with_pipeline():
 
 
 class TestMiddlewareUsesPipeline:
-
     def test_requests_allowed_up_to_limit(self, client_with_pipeline):
         # Default limit is 10/s from config; override via query param not possible
         # through middleware — it enforces the configured limit.
@@ -71,12 +70,8 @@ class TestMiddlewareUsesPipeline:
 
     def test_middleware_returns_429_when_limit_exceeded(self, client_with_pipeline):
         for _ in range(5):
-            client_with_pipeline.post(
-                "/check", params={"key": "mw-deny", "limit": 5}
-            )
-        r = client_with_pipeline.post(
-            "/check", params={"key": "mw-deny", "limit": 5}
-        )
+            client_with_pipeline.post("/check", params={"key": "mw-deny", "limit": 5})
+        r = client_with_pipeline.post("/check", params={"key": "mw-deny", "limit": 5})
         assert r.status_code == 429
         body = r.json()
         assert body["detail"]["error"] == "rate_limit_exceeded"

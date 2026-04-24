@@ -35,10 +35,10 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class _Pending:
-    key:       str
-    limit:     int
+    key: str
+    limit: int
     window_ms: int
-    future:    Optional[asyncio.Future] = field(default=None, compare=False)
+    future: Optional[asyncio.Future] = field(default=None, compare=False)
 
 
 class PipelinedRateLimiter:
@@ -58,7 +58,7 @@ class PipelinedRateLimiter:
         redis_client: aioredis.Redis,
         batch_size: int = 100,
     ) -> None:
-        self._redis      = redis_client
+        self._redis = redis_client
         self._batch_size = batch_size
         self._queue: asyncio.Queue[_Pending] = asyncio.Queue()
 
@@ -72,10 +72,10 @@ class PipelinedRateLimiter:
         Enqueue a rate-limit check and await its result.
         Returns immediately when the next pipeline flush resolves it.
         """
-        loop   = asyncio.get_running_loop()
+        loop = asyncio.get_running_loop()
         future = loop.create_future()
-        req    = _Pending(key=key, limit=limit, window_ms=window_ms, future=future)
-        self._queue.put_nowait(req)   # never blocks — queue is unbounded
+        req = _Pending(key=key, limit=limit, window_ms=window_ms, future=future)
+        self._queue.put_nowait(req)  # never blocks — queue is unbounded
         return await future
 
     async def run(self) -> None:
@@ -123,12 +123,12 @@ class PipelinedRateLimiter:
             member_id = f"{now_ms}:{uuid.uuid4().hex}"
             pipe.eval(
                 _SLIDING_WINDOW_LUA,
-                1,                    # numkeys
-                req.key,              # KEYS[1]
-                now_ms,               # ARGV[1]
-                req.window_ms,        # ARGV[2]
-                req.limit,            # ARGV[3]
-                member_id,            # ARGV[4]
+                1,  # numkeys
+                req.key,  # KEYS[1]
+                now_ms,  # ARGV[1]
+                req.window_ms,  # ARGV[2]
+                req.limit,  # ARGV[3]
+                member_id,  # ARGV[4]
             )
 
         try:
@@ -146,8 +146,11 @@ class PipelinedRateLimiter:
                 logger.warning("Single eval failed for key=%s — failing open", req.key)
                 req.future.set_result(
                     RateLimitResult(
-                        allowed=True, current_count=0,
-                        limit=req.limit, window_ms=req.window_ms, retry_after_ms=0,
+                        allowed=True,
+                        current_count=0,
+                        limit=req.limit,
+                        window_ms=req.window_ms,
+                        retry_after_ms=0,
                     )
                 )
             else:
@@ -166,7 +169,10 @@ class PipelinedRateLimiter:
             if not req.future.done():
                 req.future.set_result(
                     RateLimitResult(
-                        allowed=True, current_count=0,
-                        limit=req.limit, window_ms=req.window_ms, retry_after_ms=0,
+                        allowed=True,
+                        current_count=0,
+                        limit=req.limit,
+                        window_ms=req.window_ms,
+                        retry_after_ms=0,
                     )
                 )

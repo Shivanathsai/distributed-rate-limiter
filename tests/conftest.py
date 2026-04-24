@@ -9,7 +9,6 @@ background flush task managed by the fixture).
 import asyncio
 from typing import AsyncGenerator
 
-import pytest
 import pytest_asyncio
 import fakeredis.aioredis as fakeredis
 
@@ -41,7 +40,7 @@ async def pipeline_limiter(fake_redis):
     PipelinedRateLimiter with its background flush task running.
     Task is cancelled cleanly after the test.
     """
-    pl   = PipelinedRateLimiter(fake_redis, batch_size=50)
+    pl = PipelinedRateLimiter(fake_redis, batch_size=50)
     task = asyncio.create_task(pl.run(), name="test-flusher")
     yield pl
     task.cancel()

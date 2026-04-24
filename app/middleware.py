@@ -20,7 +20,9 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-_EXEMPT = frozenset({"/health", "/ready", "/metrics", "/docs", "/openapi.json", "/redoc"})
+_EXEMPT = frozenset(
+    {"/health", "/ready", "/metrics", "/docs", "/openapi.json", "/redoc"}
+)
 
 _TRUSTED_RANGES: List[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
 for _cidr in settings.trusted_proxies:
@@ -66,13 +68,15 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         limiter = getattr(request.app.state, "pipeline_limiter", None)
         if limiter is None:
             # Startup not complete yet — fail open
-            logger.warning("pipeline_limiter not ready — failing open for %s", request.url.path)
+            logger.warning(
+                "pipeline_limiter not ready — failing open for %s", request.url.path
+            )
             return await call_next(request)
 
         client_ip = _real_ip(request)
-        key       = f"rl:ip:{client_ip}"
-        limit     = settings.default_limit_per_second
-        window    = 1_000   # ms
+        key = f"rl:ip:{client_ip}"
+        limit = settings.default_limit_per_second
+        window = 1_000  # ms
 
         result = await limiter.check(key, limit, window)
         headers = result.as_headers()
@@ -85,16 +89,18 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         logger.warning(
             "Rate limit exceeded ip=%s count=%d/%d",
-            client_ip, result.current_count, result.limit,
+            client_ip,
+            result.current_count,
+            result.limit,
         )
         return JSONResponse(
             status_code=429,
             content={
-                "error":          "rate_limit_exceeded",
-                "message":        "Too many requests.",
+                "error": "rate_limit_exceeded",
+                "message": "Too many requests.",
                 "retry_after_ms": result.retry_after_ms,
-                "limit":          result.limit,
-                "window_ms":      result.window_ms,
+                "limit": result.limit,
+                "window_ms": result.window_ms,
             },
             headers={**headers, "Content-Type": "application/json"},
         )

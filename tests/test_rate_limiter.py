@@ -9,12 +9,9 @@ Run: pytest tests/test_rate_limiter.py -v --tb=short
 """
 
 import asyncio
-import time
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
-import pytest_asyncio
-import fakeredis.aioredis as fakeredis
 
 from app.rate_limiter import RateLimitResult, SlidingWindowRateLimiter
 
@@ -22,6 +19,7 @@ from app.rate_limiter import RateLimitResult, SlidingWindowRateLimiter
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 async def _allow_n(limiter, key, n, limit=10, window=1_000):
     """Fire *n* requests and return list of RateLimitResult."""
@@ -32,8 +30,8 @@ async def _allow_n(limiter, key, n, limit=10, window=1_000):
 # Basic allow / deny
 # ---------------------------------------------------------------------------
 
-class TestBasicAllowDeny:
 
+class TestBasicAllowDeny:
     @pytest.mark.asyncio
     async def test_first_request_always_allowed(self, limiter):
         result = await limiter.check("key:test", limit=5, window_ms=1_000)
@@ -91,8 +89,8 @@ class TestBasicAllowDeny:
 # Window semantics
 # ---------------------------------------------------------------------------
 
-class TestWindowSemantics:
 
+class TestWindowSemantics:
     @pytest.mark.asyncio
     async def test_result_carries_window_ms(self, limiter):
         result = await limiter.check("key:win", limit=5, window_ms=5_000)
@@ -116,8 +114,8 @@ class TestWindowSemantics:
 # Peek and reset
 # ---------------------------------------------------------------------------
 
-class TestPeekAndReset:
 
+class TestPeekAndReset:
     @pytest.mark.asyncio
     async def test_peek_returns_zero_for_empty_key(self, limiter):
         count = await limiter.peek("key:empty", window_ms=1_000)
@@ -128,7 +126,7 @@ class TestPeekAndReset:
         await _allow_n(limiter, "key:peek", 3, limit=10)
         before = await limiter.peek("key:peek", window_ms=1_000)
         await limiter.peek("key:peek", window_ms=1_000)
-        after  = await limiter.peek("key:peek", window_ms=1_000)
+        after = await limiter.peek("key:peek", window_ms=1_000)
         assert before == after == 3
 
     @pytest.mark.asyncio
@@ -157,12 +155,15 @@ class TestPeekAndReset:
 # RateLimitResult helpers
 # ---------------------------------------------------------------------------
 
-class TestRateLimitResult:
 
+class TestRateLimitResult:
     def _result(self, allowed, count, limit, retry=0):
         return RateLimitResult(
-            allowed=allowed, current_count=count,
-            limit=limit, window_ms=1_000, retry_after_ms=retry,
+            allowed=allowed,
+            current_count=count,
+            limit=limit,
+            window_ms=1_000,
+            retry_after_ms=retry,
         )
 
     def test_remaining_allowed(self):
@@ -199,8 +200,8 @@ class TestRateLimitResult:
 # Concurrent safety
 # ---------------------------------------------------------------------------
 
-class TestConcurrency:
 
+class TestConcurrency:
     @pytest.mark.asyncio
     async def test_concurrent_requests_respect_limit(self, fake_redis):
         """
@@ -208,23 +209,23 @@ class TestConcurrency:
         Exactly 20 should be allowed.
         """
         limiter = SlidingWindowRateLimiter(fake_redis)
-        key     = "key:concurrent"
-        limit   = 20
+        key = "key:concurrent"
+        limit = 20
 
         results = await asyncio.gather(
             *[limiter.check(key, limit, 1_000) for _ in range(50)]
         )
         allowed_count = sum(1 for r in results if r.allowed)
-        denied_count  = sum(1 for r in results if not r.allowed)
+        denied_count = sum(1 for r in results if not r.allowed)
 
         assert allowed_count == limit
-        assert denied_count  == 30
+        assert denied_count == 30
 
     @pytest.mark.asyncio
     async def test_no_count_exceeds_limit_under_concurrent_load(self, fake_redis):
         limiter = SlidingWindowRateLimiter(fake_redis)
-        key     = "key:safe"
-        limit   = 10
+        key = "key:safe"
+        limit = 10
 
         results = await asyncio.gather(
             *[limiter.check(key, limit, 1_000) for _ in range(100)]
@@ -237,8 +238,8 @@ class TestConcurrency:
 # Fail-open behaviour
 # ---------------------------------------------------------------------------
 
-class TestFailOpen:
 
+class TestFailOpen:
     @pytest.mark.asyncio
     async def test_redis_error_allows_request(self, fake_redis):
         """On Redis failure the limiter must fail-open (never block traffic)."""
@@ -247,7 +248,8 @@ class TestFailOpen:
         import redis.asyncio as aioredis
 
         with patch.object(
-            limiter, "_load_script",
+            limiter,
+            "_load_script",
             side_effect=aioredis.RedisError("simulated failure"),
         ):
             result = await limiter.check("key:fail", limit=5, window_ms=1_000)
@@ -259,8 +261,8 @@ class TestFailOpen:
 # Health check
 # ---------------------------------------------------------------------------
 
-class TestHealth:
 
+class TestHealth:
     @pytest.mark.asyncio
     async def test_health_returns_true_when_redis_up(self, limiter):
         assert await limiter.health() is True

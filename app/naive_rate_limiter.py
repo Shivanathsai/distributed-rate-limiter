@@ -38,7 +38,7 @@ class NaiveResult:
     allowed: bool
     current_count: int
     limit: int
-    scan_size: int          # how many entries Python had to scan — the O(n) cost
+    scan_size: int  # how many entries Python had to scan — the O(n) cost
 
 
 class NaiveListRateLimiter:
@@ -58,8 +58,8 @@ class NaiveListRateLimiter:
         limit: int,
         window_ms: int = 1_000,
     ) -> NaiveResult:
-        now_ms   = int(time.time() * 1_000)
-        cutoff   = now_ms - window_ms
+        now_ms = int(time.time() * 1_000)
+        cutoff = now_ms - window_ms
 
         # Step 1: Fetch ENTIRE list into Python — O(n) network transfer
         raw: list[str] = await self._redis.lrange(key, 0, -1)
