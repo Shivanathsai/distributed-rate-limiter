@@ -1,34 +1,16 @@
-"""
-Tests for SlidingWindowRateLimiter
-===================================
-Covers: allow/deny logic, window expiry, exact limit boundary,
-burst behaviour, concurrent requests, key isolation, reset, peek,
-fail-open on Redis error, and retry-after calculation.
-
-Run: pytest tests/test_rate_limiter.py -v --tb=short
-"""
-
 import asyncio
-from unittest.mock import patch
+from unittest.mock import patch, AsyncMock
 
+import fakeredis
+import fakeredis.aioredis as aioredis_fake
 import pytest
+import pytest_asyncio
 
 from app.rate_limiter import RateLimitResult, SlidingWindowRateLimiter
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
 async def _allow_n(limiter, key, n, limit=10, window=1_000):
-    """Fire *n* requests and return list of RateLimitResult."""
     return [await limiter.check(key, limit, window) for _ in range(n)]
-
-
-# ---------------------------------------------------------------------------
-# Basic allow / deny
-# ---------------------------------------------------------------------------
 
 
 class TestBasicAllowDeny:
@@ -55,7 +37,6 @@ class TestBasicAllowDeny:
 
     @pytest.mark.asyncio
     async def test_exact_boundary(self, limiter):
-        """The 10th request is allowed; the 11th is denied."""
         key = "key:boundary"
         for i in range(1, 11):
             r = await limiter.check(key, limit=10, window_ms=1_000)
@@ -65,7 +46,6 @@ class TestBasicAllowDeny:
 
     @pytest.mark.asyncio
     async def test_different_keys_are_independent(self, limiter):
-        """Hitting the limit on key A must not affect key B."""
         await _allow_n(limiter, "key:a", 10, limit=10)
         result_a = await limiter.check("key:a", limit=10, window_ms=1_000)
         result_b = await limiter.check("key:b", limit=10, window_ms=1_000)
@@ -83,11 +63,6 @@ class TestBasicAllowDeny:
     async def test_very_large_limit(self, limiter):
         results = await _allow_n(limiter, "key:large", 1_000, limit=10_000)
         assert all(r.allowed for r in results)
-
-
-# ---------------------------------------------------------------------------
-# Window semantics
-# ---------------------------------------------------------------------------
 
 
 class TestWindowSemantics:
@@ -108,11 +83,6 @@ class TestWindowSemantics:
         assert not result.allowed
         assert result.retry_after_ms > 0
         assert result.retry_after_ms <= 1_000
-
-
-# ---------------------------------------------------------------------------
-# Peek and reset
-# ---------------------------------------------------------------------------
 
 
 class TestPeekAndReset:
@@ -151,11 +121,6 @@ class TestPeekAndReset:
         assert (await limiter.check(key, 5, 1_000)).allowed
 
 
-# ---------------------------------------------------------------------------
-# RateLimitResult helpers
-# ---------------------------------------------------------------------------
-
-
 class TestRateLimitResult:
     def _result(self, allowed, count, limit, retry=0):
         return RateLimitResult(
@@ -167,99 +132,68 @@ class TestRateLimitResult:
         )
 
     def test_remaining_allowed(self):
-        r = self._result(True, 3, 10)
-        assert r.remaining == 7
+        assert self._result(True, 3, 10).remaining == 7
 
     def test_remaining_at_limit(self):
-        r = self._result(True, 10, 10)
-        assert r.remaining == 0
+        assert self._result(True, 10, 10).remaining == 0
 
     def test_remaining_never_negative(self):
-        r = self._result(False, 10, 10)
-        assert r.remaining == 0
+        assert self._result(False, 10, 10).remaining == 0
 
     def test_retry_after_seconds_conversion(self):
         r = self._result(False, 10, 10, retry=750)
         assert r.retry_after_seconds == pytest.approx(0.75)
 
     def test_headers_allowed(self):
-        r = self._result(True, 3, 10)
-        h = r.as_headers()
+        h = self._result(True, 3, 10).as_headers()
         assert h["X-RateLimit-Limit"] == "10"
         assert h["X-RateLimit-Remaining"] == "7"
         assert "Retry-After" not in h
 
     def test_headers_denied(self):
-        r = self._result(False, 10, 10, retry=500)
-        h = r.as_headers()
+        h = self._result(False, 10, 10, retry=500).as_headers()
         assert "Retry-After" in h
         assert int(h["Retry-After"]) >= 1
 
 
-# ---------------------------------------------------------------------------
-# Concurrent safety
-# ---------------------------------------------------------------------------
-
-
 class TestConcurrency:
     @pytest.mark.asyncio
-    async def test_concurrent_requests_respect_limit(self, fake_redis):
-        """
-        Fire 50 coroutines concurrently against a limit of 20.
-        Exactly 20 should be allowed.
-        """
-        limiter = SlidingWindowRateLimiter(fake_redis)
-        key = "key:concurrent"
-        limit = 20
-
+    async def test_concurrent_requests_respect_limit(self):
+        server = fakeredis.FakeServer()
+        redis = aioredis_fake.FakeRedis(server=server, decode_responses=True)
+        limiter = SlidingWindowRateLimiter(redis)
         results = await asyncio.gather(
-            *[limiter.check(key, limit, 1_000) for _ in range(50)]
+            *[limiter.check("key:concurrent", 20, 1_000) for _ in range(50)]
         )
-        allowed_count = sum(1 for r in results if r.allowed)
-        denied_count = sum(1 for r in results if not r.allowed)
-
-        assert allowed_count == limit
-        assert denied_count == 30
+        assert sum(1 for r in results if r.allowed) == 20
+        assert sum(1 for r in results if not r.allowed) == 30
 
     @pytest.mark.asyncio
-    async def test_no_count_exceeds_limit_under_concurrent_load(self, fake_redis):
-        limiter = SlidingWindowRateLimiter(fake_redis)
-        key = "key:safe"
-        limit = 10
-
+    async def test_no_count_exceeds_limit_under_concurrent_load(self):
+        server = fakeredis.FakeServer()
+        redis = aioredis_fake.FakeRedis(server=server, decode_responses=True)
+        limiter = SlidingWindowRateLimiter(redis)
         results = await asyncio.gather(
-            *[limiter.check(key, limit, 1_000) for _ in range(100)]
+            *[limiter.check("key:safe", 10, 1_000) for _ in range(100)]
         )
-        max_count = max(r.current_count for r in results if r.allowed)
-        assert max_count <= limit
-
-
-# ---------------------------------------------------------------------------
-# Fail-open behaviour
-# ---------------------------------------------------------------------------
+        assert max(r.current_count for r in results if r.allowed) <= 10
 
 
 class TestFailOpen:
     @pytest.mark.asyncio
     async def test_redis_error_allows_request(self, fake_redis):
-        """On Redis failure the limiter must fail-open (never block traffic)."""
-        limiter = SlidingWindowRateLimiter(fake_redis)
-
+        """Patch eval directly — fail-open on Redis error."""
         import redis.asyncio as aioredis
 
+        limiter = SlidingWindowRateLimiter(fake_redis)
+        # Patch the underlying redis client's eval to raise RedisError
         with patch.object(
-            limiter,
-            "_load_script",
+            fake_redis,
+            "eval",
             side_effect=aioredis.RedisError("simulated failure"),
         ):
             result = await limiter.check("key:fail", limit=5, window_ms=1_000)
-
         assert result.allowed is True
-
-
-# ---------------------------------------------------------------------------
-# Health check
-# ---------------------------------------------------------------------------
 
 
 class TestHealth:

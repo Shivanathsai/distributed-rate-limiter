@@ -1,25 +1,18 @@
-"""
-conftest.py — shared pytest fixtures
-=====================================
-Uses fakeredis so tests run with no real Redis instance.
-Provides both a plain limiter and a PipelinedRateLimiter (with its
-background flush task managed by the fixture).
-"""
-
 import asyncio
 from typing import AsyncGenerator
 
+import fakeredis
+import fakeredis.aioredis as aioredis_fake
 import pytest_asyncio
-import fakeredis.aioredis as fakeredis
 
 from app.rate_limiter import SlidingWindowRateLimiter, TieredRateLimiter
 from app.pipeline_limiter import PipelinedRateLimiter
 
 
 @pytest_asyncio.fixture
-async def fake_redis() -> AsyncGenerator[fakeredis.FakeRedis, None]:
+async def fake_redis() -> AsyncGenerator[aioredis_fake.FakeRedis, None]:
     server = fakeredis.FakeServer()
-    client = fakeredis.FakeRedis(server=server, decode_responses=True)
+    client = aioredis_fake.FakeRedis(server=server, decode_responses=True)
     yield client
     await client.aclose()
 
@@ -36,10 +29,6 @@ async def tiered_limiter(fake_redis) -> TieredRateLimiter:
 
 @pytest_asyncio.fixture
 async def pipeline_limiter(fake_redis):
-    """
-    PipelinedRateLimiter with its background flush task running.
-    Task is cancelled cleanly after the test.
-    """
     pl = PipelinedRateLimiter(fake_redis, batch_size=50)
     task = asyncio.create_task(pl.run(), name="test-flusher")
     yield pl

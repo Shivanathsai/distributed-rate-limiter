@@ -99,7 +99,6 @@ class SlidingWindowRateLimiter:
 
     def __init__(self, redis_client: aioredis.Redis) -> None:
         self._redis = redis_client
-        self._script: Optional[Any] = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -125,14 +124,17 @@ class SlidingWindowRateLimiter:
         now_ms = int(time.time() * 1_000)
         member_id = f"{now_ms}:{uuid.uuid4().hex}"
 
-        script = await self._load_script()
         try:
-            raw = await script(
-                keys=[key],
-                args=[now_ms, window_ms, limit, member_id],
+            raw = await self._redis.eval(
+                _SLIDING_WINDOW_LUA,
+                1,
+                key,
+                now_ms,
+                window_ms,
+                limit,
+                member_id,
             )
         except aioredis.RedisError as exc:
-            # Fail-open: never block traffic on Redis errors.
             logger.error("Redis error in rate limiter — failing open: %s", exc)
             return RateLimitResult(
                 allowed=True,
@@ -169,15 +171,6 @@ class SlidingWindowRateLimiter:
             return await self._redis.ping()
         except aioredis.RedisError:
             return False
-
-    # ------------------------------------------------------------------
-    # Internal
-    # ------------------------------------------------------------------
-
-    async def _load_script(self) -> Any:
-        if self._script is None:
-            self._script = self._redis.register_script(_SLIDING_WINDOW_LUA)
-        return self._script
 
 
 # ---------------------------------------------------------------------------
