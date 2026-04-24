@@ -194,7 +194,7 @@ jobs:
           python scripts/load_test.py \
             --mode pipeline \
             --redis-url redis://localhost:6379 \
-            --total 50000 \
+            --n-batches 500 \
             --batch-size 100
 
       # HTTP benchmark — full stack: client → uvicorn → middleware → pipeline → Redis.
