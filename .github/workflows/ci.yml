@@ -195,7 +195,8 @@ jobs:
             --mode pipeline \
             --redis-url redis://localhost:6379 \
             --n-batches 500 \
-            --batch-size 100
+            --batch-size 100 \
+            --min-throughput 20000
 
       # HTTP benchmark — full stack: client → uvicorn → middleware → pipeline → Redis.
       # Asserts p99 < 5ms at concurrency=200.
