@@ -1,0 +1,22 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: rate-limiter
+  labels:
+    app.kubernetes.io/part-of: rate-limiter
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rate-limiter-config
+  namespace: rate-limiter
+data:
+  REDIS_URL:                  "redis://redis-service:6379/0"
+  DEFAULT_LIMIT_PER_SECOND:   "10"
+  IP_LIMIT_PER_MINUTE:        "500"
+  ENDPOINT_LIMIT_PER_SECOND:  "200"
+  LOG_LEVEL:                  "INFO"
+  METRICS_ENABLED:            "true"
+  WORKERS:                    "4"

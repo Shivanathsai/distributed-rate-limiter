@@ -1,0 +1,370 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# GitHub Actions CI/CD — Distributed Rate Limiter
+#
+# Jobs:
+#   lint         → ruff + mypy (fast, no services)
+#   unit-test    → pytest + fakeredis (no real Redis needed)
+#   failover-test→ docker compose up → kill Redis → assert fail-open → restore → assert recovery
+#   load-test    → pipeline benchmark (assert 100K+ req/s AND p99<5ms) +
+#                  HTTP benchmark (assert p99<5ms)
+#   build        → docker build + push to ECR  [main only]
+#   deploy-staging   → kubectl rollout to EKS staging  [main only]
+#   deploy-production→ kubectl rollout to EKS production  [main + manual approval]
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: CI/CD
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  PYTHON_VERSION: "3.12"
+  ECR_REGISTRY:  ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
+  IMAGE_NAME:    rate-limiter
+
+# ── Lint ──────────────────────────────────────────────────────────────────────
+jobs:
+  lint:
+    name: Lint (ruff + mypy)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dev dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: ruff — lint
+        run: ruff check app/ tests/
+
+      - name: ruff — format check
+        run: ruff format --check app/ tests/
+
+      - name: mypy — type check
+        run: mypy app/ --ignore-missing-imports
+        continue-on-error: true   # type coverage improves over time
+
+
+# ── Unit tests ────────────────────────────────────────────────────────────────
+  unit-test:
+    name: Unit tests (pytest + fakeredis)
+    runs-on: ubuntu-latest
+    needs: lint
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run pytest with coverage
+        run: |
+          pytest tests/ \
+            --cov=app \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage.xml \
+            --cov-fail-under=85 \
+            --tb=short \
+            -q
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
+
+
+# ── Failover test ─────────────────────────────────────────────────────────────
+  failover-test:
+    name: Failover test (kill Redis → assert fail-open → assert recovery)
+    runs-on: ubuntu-latest
+    needs: unit-test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt httpx
+
+      - name: Start services (Redis + rate-limiter)
+        run: docker compose up -d --build
+
+      - name: Wait for rate-limiter to be healthy
+        run: |
+          echo "Waiting for service..."
+          timeout 60 bash -c \
+            'until curl -sf http://localhost:8000/health; do echo "."; sleep 2; done'
+          echo "Service is up."
+
+      - name: Smoke test — verify normal operation
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X POST "http://localhost:8000/check?key=smoke&limit=10")
+          if [ "$STATUS" != "200" ]; then
+            echo "Smoke test failed: HTTP $STATUS"
+            exit 1
+          fi
+          echo "Smoke test passed (HTTP 200)"
+
+      - name: Kill Redis (simulate primary failure)
+        run: |
+          docker stop rate-limiter-redis
+          echo "Redis stopped."
+
+      # Give the service one second to detect the outage
+      - name: Wait 1s for outage to propagate
+        run: sleep 1
+
+      - name: Assert fail-open — no 5xx while Redis is down
+        run: |
+          python scripts/failover_test.py \
+            --url http://localhost:8000 \
+            --mode assert-fail-open \
+            --total 30 \
+            --concurrency 5
+
+      - name: Restore Redis
+        run: |
+          docker start rate-limiter-redis
+          echo "Redis restarted."
+
+      - name: Assert recovery — service returns to normal within 30s
+        run: |
+          python scripts/failover_test.py \
+            --url http://localhost:8000 \
+            --mode assert-recovery \
+            --timeout 30
+
+      - name: Print service logs on failure
+        if: failure()
+        run: docker compose logs rate-limiter
+
+      - name: Tear down
+        if: always()
+        run: docker compose down
+
+
+# ── Load test ─────────────────────────────────────────────────────────────────
+  load-test:
+    name: Load test (100K+ req/s pipeline AND p99 < 5ms HTTP)
+    runs-on: ubuntu-latest
+    needs: unit-test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt httpx
+
+      - name: Start services
+        run: docker compose up -d --build
+
+      - name: Wait for service healthy
+        run: |
+          timeout 60 bash -c \
+            'until curl -sf http://localhost:8000/health; do sleep 2; done'
+
+      # Pipeline benchmark — directly exercises PipelinedRateLimiter against
+      # the real Redis service container. Asserts 100K+ req/s AND p99 < 5ms.
+      - name: Pipeline benchmark (100K+ req/s assertion)
+        run: |
+          python scripts/load_test.py \
+            --mode pipeline \
+            --redis-url redis://localhost:6379 \
+            --total 50000 \
+            --batch-size 100
+
+      # HTTP benchmark — full stack: client → uvicorn → middleware → pipeline → Redis.
+      # Asserts p99 < 5ms at concurrency=200.
+      - name: HTTP benchmark (p99 < 5ms assertion)
+        run: |
+          python scripts/load_test.py \
+            --mode http \
+            --url http://localhost:8000 \
+            --http-total 5000 \
+            --concurrency 200
+
+      - name: Print service logs on failure
+        if: failure()
+        run: docker compose logs rate-limiter
+
+      - name: Tear down
+        if: always()
+        run: docker compose down
+
+
+# ── Build ─────────────────────────────────────────────────────────────────────
+  build:
+    name: Build & push Docker image to ECR
+    runs-on: ubuntu-latest
+    needs: [failover-test, load-test]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set image tag
+        id: meta
+        run: |
+          IMAGE="${{ env.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}"
+          SHA_TAG="${IMAGE}:${{ github.sha }}"
+          LATEST_TAG="${IMAGE}:latest"
+          echo "image=${SHA_TAG}" >> "$GITHUB_OUTPUT"
+          echo "SHA_TAG=${SHA_TAG}" >> "$GITHUB_ENV"
+          echo "LATEST_TAG=${LATEST_TAG}" >> "$GITHUB_ENV"
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            --cache-from "$LATEST_TAG" \
+            --build-arg BUILDKIT_INLINE_CACHE=1 \
+            -t "$SHA_TAG" \
+            -t "$LATEST_TAG" \
+            .
+
+      - name: Push to ECR
+        run: |
+          docker push "$SHA_TAG"
+          docker push "$LATEST_TAG"
+
+
+# ── Deploy staging ────────────────────────────────────────────────────────────
+  deploy-staging:
+    name: Deploy to EKS staging
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    environment:
+      name: staging
+      url:  https://rate-limiter.staging.example.com
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION }}
+
+      - name: Update kubeconfig for staging
+        run: |
+          aws eks update-kubeconfig \
+            --name ${{ secrets.EKS_CLUSTER_STAGING }} \
+            --region ${{ secrets.AWS_REGION }}
+
+      - name: Apply K8s manifests
+        run: kubectl apply -f k8s/ -n rate-limiter
+
+      - name: Roll out new image
+        run: |
+          kubectl set image deployment/rate-limiter \
+            rate-limiter=${{ needs.build.outputs.image }} \
+            -n rate-limiter
+
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment/rate-limiter \
+            -n rate-limiter \
+            --timeout=120s
+
+      - name: Smoke test staging
+        run: |
+          STATUS=$(curl -sf -o /dev/null -w "%{http_code}" \
+            https://rate-limiter.staging.example.com/health)
+          [ "$STATUS" = "200" ] && echo "Staging healthy ✓" || exit 1
+
+
+# ── Deploy production ─────────────────────────────────────────────────────────
+  deploy-production:
+    name: Deploy to EKS production
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    # GitHub Environment with required reviewers = manual approval gate.
+    # Configure in: Settings → Environments → production → Required reviewers.
+    environment:
+      name: production
+      url:  https://rate-limiter.example.com
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION }}
+
+      - name: Update kubeconfig for production
+        run: |
+          aws eks update-kubeconfig \
+            --name ${{ secrets.EKS_CLUSTER_PRODUCTION }} \
+            --region ${{ secrets.AWS_REGION }}
+
+      - name: Apply K8s manifests
+        run: kubectl apply -f k8s/ -n rate-limiter
+
+      - name: Roll out new image
+        run: |
+          kubectl set image deployment/rate-limiter \
+            rate-limiter=${{ needs.build.outputs.image }} \
+            -n rate-limiter
+
+      - name: Wait for rollout (3 replicas, rolling update, zero downtime)
+        run: |
+          kubectl rollout status deployment/rate-limiter \
+            -n rate-limiter \
+            --timeout=180s
+
+      - name: Production smoke test
+        run: |
+          STATUS=$(curl -sf -o /dev/null -w "%{http_code}" \
+            https://rate-limiter.example.com/health)
+          [ "$STATUS" = "200" ] && echo "Production healthy ✓" || exit 1
+
+      - name: Notify on failure (rollback)
+        if: failure()
+        run: |
+          kubectl rollout undo deployment/rate-limiter -n rate-limiter
+          echo "Rolled back deployment due to failure."

@@ -1,0 +1,59 @@
+---
+# ClusterIP Service — fronts the rate-limiter pods
+apiVersion: v1
+kind: Service
+metadata:
+  name: rate-limiter-service
+  namespace: rate-limiter
+  labels:
+    app: rate-limiter
+spec:
+  selector:
+    app: rate-limiter
+  ports:
+    - name: http
+      port:       80
+      targetPort: 8000
+      protocol:   TCP
+  type: ClusterIP
+
+---
+# Horizontal Pod Autoscaler — scales 3–10 replicas based on CPU + RPS
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: rate-limiter-hpa
+  namespace: rate-limiter
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind:       Deployment
+    name:       rate-limiter
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type:               Utilization
+          averageUtilization: 60
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type:               Utilization
+          averageUtilization: 75
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 30
+      policies:
+        - type:          Pods
+          value:         2
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 120   # conservative — avoid flapping
+      policies:
+        - type:          Pods
+          value:         1
+          periodSeconds: 60

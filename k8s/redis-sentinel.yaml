@@ -1,0 +1,180 @@
+---
+# Redis primary
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis-primary
+  namespace: rate-limiter
+spec:
+  serviceName: redis-primary
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+      role: primary
+  template:
+    metadata:
+      labels:
+        app: redis
+        role: primary
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+            - containerPort: 6379
+          command: ["redis-server", "--save", "", "--appendonly", "no"]
+          resources:
+            requests: { cpu: "200m", memory: "256Mi" }
+            limits:   { cpu: "500m", memory: "512Mi" }
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+
+---
+# Redis replicas (x2) — Sentinel promotes one on primary failure
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis-replica
+  namespace: rate-limiter
+spec:
+  serviceName: redis-replica
+  replicas: 2
+  selector:
+    matchLabels:
+      app: redis
+      role: replica
+  template:
+    metadata:
+      labels:
+        app: redis
+        role: replica
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+            - containerPort: 6379
+          command:
+            - redis-server
+            - "--replicaof"
+            - "redis-primary-0.redis-primary.rate-limiter.svc.cluster.local"
+            - "6379"
+            - "--save"
+            - ""
+          resources:
+            requests: { cpu: "100m", memory: "128Mi" }
+            limits:   { cpu: "300m", memory: "256Mi" }
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+
+---
+# Redis Sentinel (x3 for quorum=2)
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis-sentinel
+  namespace: rate-limiter
+spec:
+  serviceName: redis-sentinel
+  replicas: 3
+  selector:
+    matchLabels:
+      app: redis-sentinel
+  template:
+    metadata:
+      labels:
+        app: redis-sentinel
+    spec:
+      initContainers:
+        - name: write-sentinel-config
+          image: redis:7-alpine
+          command:
+            - sh
+            - -c
+            - |
+              cat > /etc/redis/sentinel.conf << EOF
+              sentinel monitor mymaster redis-primary-0.redis-primary.rate-limiter.svc.cluster.local 6379 2
+              sentinel down-after-milliseconds mymaster 5000
+              sentinel failover-timeout mymaster 10000
+              sentinel parallel-syncs mymaster 1
+              EOF
+          volumeMounts:
+            - name: sentinel-config
+              mountPath: /etc/redis
+      containers:
+        - name: sentinel
+          image: redis:7-alpine
+          ports:
+            - containerPort: 26379
+          command: ["redis-sentinel", "/etc/redis/sentinel.conf"]
+          resources:
+            requests: { cpu: "50m", memory: "64Mi" }
+            limits:   { cpu: "100m", memory: "128Mi" }
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "-p", "26379", "ping"]
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          volumeMounts:
+            - name: sentinel-config
+              mountPath: /etc/redis
+      volumes:
+        - name: sentinel-config
+          emptyDir: {}
+
+---
+# Headless service for primary (stable DNS for replicas + sentinel)
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-primary
+  namespace: rate-limiter
+spec:
+  clusterIP: None
+  selector:
+    app: redis
+    role: primary
+  ports:
+    - port: 6379
+
+---
+# Headless service for sentinels
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-sentinel
+  namespace: rate-limiter
+spec:
+  clusterIP: None
+  selector:
+    app: redis-sentinel
+  ports:
+    - port: 26379
+
+---
+# ConfigMap update — point app at Sentinel
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rate-limiter-config
+  namespace: rate-limiter
+data:
+  # Sentinel hosts (replaces REDIS_URL in production)
+  REDIS_SENTINEL_HOSTS: >-
+    redis-sentinel-0.redis-sentinel.rate-limiter.svc.cluster.local:26379,
+    redis-sentinel-1.redis-sentinel.rate-limiter.svc.cluster.local:26379,
+    redis-sentinel-2.redis-sentinel.rate-limiter.svc.cluster.local:26379
+  REDIS_SENTINEL_MASTER:          "mymaster"
+  DEFAULT_LIMIT_PER_SECOND:       "10"
+  IP_LIMIT_PER_MINUTE:            "500"
+  ENDPOINT_LIMIT_PER_SECOND:      "200"
+  LOG_LEVEL:                      "INFO"
+  METRICS_ENABLED:                "true"
+  WORKERS:                        "4"
