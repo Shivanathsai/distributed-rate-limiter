@@ -98,7 +98,7 @@ class TestComplexityComparison:
             latencies_sorted_large.append((time.perf_counter() - t0) * 1_000)
 
         def p99(lats):
-           return sorted(lats)[int(len(lats) * 0.99)]
+            return sorted(lats)[int(len(lats) * 0.99)]
 
         naive_small_p99 = p99(latencies_naive_small)
         naive_large_p99 = p99(latencies_naive_large)
